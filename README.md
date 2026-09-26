@@ -12,35 +12,6 @@ inv_rms = 1 / sqrt(mean(x²) + eps)
 output  = x * inv_rms * weight
 ```
 
-## Implementations
-
-```text
-Pure MLX reference
-        ↓
-Naive Metal: one thread per row
-        ↓
-Parallel Metal: one threadgroup per row
-        ↓
-Threadgroup-memory tree reduction
-        ↓
-SIMD-group reduction
-        ↓
-Scalar / 2-wide / 4-wide memory access
-        ↓
-Selectable input-precision / FP32 accumulation
-```
-
-- `rmsnorm/reference.py`: pure MLX and `mx.fast.rms_norm` baselines.
-- `rmsnorm/kernel_naive.py`: one GPU thread processes one row sequentially.
-- `rmsnorm/kernel_parallel.py`: one threadgroup processes one row using a
-  threadgroup-memory tree reduction.
-- `rmsnorm/kernel_optimized.py`: SIMD-group reduction with configurable vector
-  width and accumulation precision.
-
-All custom kernels fuse reduction, normalization, and multiplication by the
-weight vector into one dispatch. The default optimized configuration uses
-four-element loads and FP32 accumulation.
-
 ## Setup
 
 MLX requires an Apple Silicon Mac.
