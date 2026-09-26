@@ -1,9 +1,8 @@
 # RMSNorm Metal Kernels for MLX
 
 This project implements and optimizes fused RMSNorm kernels in Metal through
-MLX. It studies parallel reduction, threadgroup size, SIMD-group reduction,
-vectorized memory access, and accumulation precision against
-`mx.fast.rms_norm`.
+MLX. It studies parallel reduction, threadgroup size, SIMD-group reduction, 
+vectorized memory access, and accumulation precision against `mx.fast.rms_norm`.
 
 For a row of width `D`, RMSNorm computes:
 
@@ -48,8 +47,8 @@ Measurements were collected on:
 
 ### End-to-end implementation comparison
 
-These tables show median latency for batch 1024, where GPU work is large
-enough to make the algorithmic differences clear.
+The tables below show median latency at batch size 1024, where the differences 
+between the implementations are easiest to see.
 
 #### FP16
 
@@ -79,28 +78,27 @@ enough to make the algorithmic differences clear.
 
 Across all 48 batch/shape/dtype configurations, the optimized custom kernel
 was faster than MLX in 11 cases and had an arithmetic mean latency ratio of
-1.052, or about 5.2% higher latency than MLX overall. Close wins should be
-treated as ties when their measured ranges overlap.
+1.052, or about 5.2% higher latency than MLX overall. When the measured ranges
+overlap, I treat the results as effectively tied.
 
-The main result is the scaling improvement over the deliberately serial
-kernel. At batch 1024, the optimized kernel is 1.8x to 16.6x faster than the
-naive kernel. The advantage grows with hidden dimension because the naive
-kernel makes one thread perform the entire reduction sequentially. The
-optimized kernel is also 1.2x to 2.8x faster than the unfused pure-MLX
-expression at this batch size.
+The clearest result is how much better the parallel kernels scale than the
+naive version. At batch 1024, the optimized kernel is 1.8x to 16.6x faster than
+the naive kernel. The gap grows with the hidden dimension because one thread
+has to process the entire row in the naive kernel. The optimized kernel is also
+1.2x to 2.8x faster than the unfused pure-MLX expression at this batch size.
 
 For FP16 at hidden dimension 8192, optimization reduces latency from 6347.692
 to 382.203 microseconds, a 16.6x speedup, while MLX takes 377.206 microseconds.
-The custom kernel is therefore within 1.3% of MLX on this representative large
-case. For FP32 at the same shape, the optimized median is lower than the MLX
+On this large FP16 case, the custom kernel is only 1.3% slower than MLX. For
+FP32 at the same shape, the optimized median is lower than the MLX
 median, but MLX's measured range is much wider and overlaps the optimized
-range, so the data does not support a general claim that the custom kernel is
-faster.
+range. Because the measured ranges overlap, I cannot conclude that the custom
+kernel is faster here.
 
 ### Threadgroup size
 
-The threadgroup experiment uses FP16 with batch 128. The table reports the
-best median configuration for each implementation and hidden dimension.
+The threadgroup experiment uses FP16 with batch 128. For each hidden dimension,
+the table shows the threadgroup size with the lowest median latency.
 
 | Hidden dimension | Best parallel size | Parallel latency | Best optimized size | Optimized latency |
 |---:|---:|---:|---:|---:|
@@ -115,12 +113,10 @@ best median configuration for each implementation and hidden dimension.
 
 ![Optimized threadgroup comparison](results/plots/threadgroups_optimized.png)
 
-There is no universally optimal threadgroup size. Sizes 128 and 256 work well
-for many rows, while 512 is best for the tested 1024- and 8192-wide rows. The
-result is not monotonic: adding threads can reduce per-thread work, but it can
-also increase reduction, scheduling, and synchronization overhead. This is
-why threadgroup size should be tuned against actual shapes instead of fixed by
-rule of thumb.
+No single threadgroup size was consistently optimal across all tested hidden
+dimensions. In this run, 128 or 256 threads worked best for most dimensions,
+while 512 threads won at dimensions 1024 and 8192. More threads did not always
+make the kernel faster. The best threadgroup size depended on the input shape.
 
 ### Vectorized memory access
 
@@ -138,12 +134,11 @@ batch 128, and a 256-thread group.
 
 ![Vector-width comparison](results/plots/vectorization.png)
 
-Four-wide access reduces scalar-access latency by 0.7% to 10.9%, depending on the
-hidden dimension. It wins four of six shapes, while two-wide access wins at
-256 and 8192. The effect is modest and workload-dependent rather than a
-universal four-times improvement: the kernel still performs the same amount
-of arithmetic and reduction work, and dispatch/synchronization overhead is a
-large part of these sub-millisecond measurements.
+Four-wide access reduces scalar-access latency by 0.7% to 10.9%, depending on
+the hidden dimension. It wins 4 of 6 shapes, while two-wide access wins at 256
+and 8192. The improvement is fairly small and changes with the input size.
+Wider loads do not reduce the amount of arithmetic or reduction work, and
+dispatch and synchronization still account for much of these short runtimes.
 
 ### Accumulation precision
 
@@ -165,29 +160,27 @@ FP32 for comparison.
 ![Accumulation precision latency](results/plots/precision_latency.png)
 
 FP32 accumulation lowers mean absolute error by 16.3% to 21.0% for every
-tested dimension. Its latency is effectively tied with or lower than input
-precision for five of six shapes; the 8192-wide measurement is the exception,
-where FP32 is 12.6% slower. Since the accuracy improvement is consistent while
-the performance difference is generally small and noisy, FP32 is the better
-default for this implementation.
+tested dimension. FP32 accumulation had similar or lower latency in five of the
+six tests. At dimension 8192, however, it was 12.6% slower. FP32 accumulation
+is the better default because it consistently improves accuracy, while its
+effect on latency is usually small.
 
 ## Conclusions
 
-1. Parallel reduction is the decisive optimization. It changes the large-row
-   behavior from serial work in one thread to cooperative work across a
-   threadgroup and produces up to a 16.6x speedup over the naive kernel.
-2. Fusion matters. The custom kernels avoid materializing the intermediate
-   square, mean, reciprocal-root, and scaled arrays and reach up to 2.8x the
-   speed of the pure expression at batch 1024.
-3. SIMD-group reduction and vectorization close most of the remaining gap to
-   MLX, but their benefits depend on shape and launch configuration.
-4. Threadgroup tuning is empirical. No single tested size wins every hidden
-   dimension.
-5. FP32 accumulation is the preferred numerical choice: it consistently
-   reduces error with little consistent performance penalty.
-6. The final kernel is close to a production implementation rather than
-   universally faster than it. Across the full matrix it averages about 5.2%
-   higher latency than MLX, with some ties and overlapping-range wins.
+- Parallel reduction produced the largest speedup. It changes the large-row
+  behavior from serial work in one thread to cooperative work across a
+  threadgroup and produces up to a 16.6x speedup over the naive kernel.
+- Fusing the operations into one kernel also helped. The custom kernels avoid
+  materializing the intermediate square, mean, reciprocal-root, and scaled
+  arrays and reach up to 2.8x the speed of the pure expression at batch 1024.
+- SIMD-group reduction and vectorized loads brought the custom kernel closer
+  to MLX, although the improvement varied by shape and threadgroup size.
+- The best threadgroup size had to be measured for each hidden dimension. No
+  single tested size wins every hidden dimension.
+- FP32 accumulation gave more accurate results and was usually just as fast.
+- The final kernel performs close to MLX overall. Across all tested
+  configurations, its average latency was about 5.2% higher, although it
+  matched or outperformed MLX in some cases.
 
 ## Reproducing the experiments
 
@@ -211,4 +204,3 @@ performed with explicit lower counts:
 python -m benchmarks.benchmark \
   --suite vectorization --warmup 5 --iterations 20 --repeats 1
 ```
-
